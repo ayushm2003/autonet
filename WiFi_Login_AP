@@ -1,11 +1,19 @@
 #include <WiFi.h>
 #include <WebServer.h>
-#include <Preferences.h>  
+#include <Preferences.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+// Motor control pins
+#define ENA 18  // PWM Speed Control
+#define IN1 19  // Motor Direction 1
+#define IN2 21  // Motor Direction 2
 
 Preferences preferences;
 WebServer server(80);
 
-const char *apSSID = "ESP32_Setup";  
+const char *apSSID = "ESP32_Setup";
+const char *server_url = "http://192.168.1.7:5000/motor"; // Replace with Flask server IP
 
 void handleRoot() {
     server.send(200, "text/html", "<form action='/save' method='POST'>"
@@ -38,23 +46,81 @@ void setup() {
     String p = preferences.getString("p", "");
     preferences.end();
 
+    pinMode(ENA, OUTPUT);
+    pinMode(IN1, OUTPUT);
+    pinMode(IN2, OUTPUT);
+
     if (s.length() > 0) {
         WiFi.begin(s.c_str(), p.c_str());
         for (int i = 0; i < 10 && WiFi.status() != WL_CONNECTED; i++) delay(500);
         if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("Connected to WiFi!");
             Serial.println(WiFi.localIP());
             return;
         }
     }
 
     WiFi.softAP(apSSID);
+    Serial.println("Access Point Mode");
     Serial.println(WiFi.softAPIP());
-    
+
     server.on("/", handleRoot);
     server.on("/save", HTTP_POST, handleSave);
     server.begin();
 }
 
 void loop() {
-    server.handleClient();
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin(server_url);
+
+        int httpResponseCode = http.GET();
+        if (httpResponseCode > 0) {
+            String response = http.getString();
+            Serial.println("Received: " + response);
+
+            // Parse JSON response
+            DynamicJsonDocument doc(256);
+            deserializeJson(doc, response);
+
+            String direction = doc["direction"];
+            int speed = doc["speed"];
+
+            // Apply motor control logic
+            if (direction == "forward") {
+                moveForward(speed);
+            } else if (direction == "reverse") {
+                moveReverse(speed);
+            } else {
+                stopMotor();
+            }
+        } else {
+            Serial.println("Error fetching motor state.");
+        }
+        http.end();
+    } else {
+        server.handleClient();
+    }
+    delay(1000);  // Fetch command every second
+}
+
+void moveForward(int speed) {
+    Serial.println("Moving Forward");
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    analogWrite(ENA, speed);  // Adjust speed (0-255)
+}
+
+void moveReverse(int speed) {
+    Serial.println("Moving Reverse");
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    analogWrite(ENA, speed);
+}
+
+void stopMotor() {
+    Serial.println("Stopping");
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+    analogWrite(ENA, 0);
 }
